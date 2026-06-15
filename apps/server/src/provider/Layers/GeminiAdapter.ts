@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
+import { quoteForWindowsShell } from "@t3tools/shared/binaryResolution";
 import {
   ApprovalRequestId,
   type CanonicalItemType,
@@ -783,7 +784,7 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
   ) {
     return yield* Effect.try({
       try: () =>
-        spawn(binaryPath, ["--acp"], {
+        spawn(quoteForWindowsShell(binaryPath), ["--acp"], {
           cwd,
           env: env ?? process.env,
           stdio: ["pipe", "pipe", "pipe"],

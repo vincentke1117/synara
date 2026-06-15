@@ -533,8 +533,39 @@ describe("buildCodexProcessEnv", () => {
       });
 
       expect(env.CODEX_HOME).toBe(overlayHome);
-      expect(lstatSync(overlayAuthPath).isSymbolicLink()).toBe(true);
-      expect(readlinkSync(overlayAuthPath)).toBe(sourceAuthPath);
+      // auth.json must reach the overlay or Codex starts unauthenticated (401). It is a
+      // symlink where the platform allows it, or a copy fallback (e.g. Windows without
+      // symlink privilege) — either way it must expose the fresh token.
+      const overlayAuthStat = lstatSync(overlayAuthPath);
+      if (overlayAuthStat.isSymbolicLink()) {
+        expect(readlinkSync(overlayAuthPath)).toBe(sourceAuthPath);
+      }
+      expect(readFileSync(overlayAuthPath, "utf8")).toContain("fresh");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("brings auth.json into the overlay regardless of other source entries", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "t3-codex-env-"));
+    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "t3-runtime-home-"));
+    try {
+      writeFileSync(path.join(tempDir, "config.toml"), 'model = "gpt-5.5"', "utf8");
+      writeFileSync(path.join(tempDir, "auth.json"), '{"tokens":{"access_token":"fresh"}}', "utf8");
+      // Entries that sort before/around auth.json must not strand it (the 401 root cause
+      // was an earlier entry aborting the whole overlay loop).
+      writeFileSync(path.join(tempDir, "AGENTS.md"), "# agents", "utf8");
+      writeFileSync(path.join(tempDir, "version.json"), "{}", "utf8");
+      mkdirSync(path.join(tempDir, "archived_sessions"), { recursive: true });
+
+      const env = buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome },
+        homePath: tempDir,
+        platform: "darwin",
+      });
+
+      const overlayAuthPath = path.join(env.CODEX_HOME ?? "", "auth.json");
       expect(readFileSync(overlayAuthPath, "utf8")).toContain("fresh");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1318,7 +1349,7 @@ describe("CodexAppServerManager discovery", () => {
       threadId: "thread_missing",
     });
 
-    expect(getOrCreateDiscoverySession).toHaveBeenCalledWith("/repo-b");
+    expect(getOrCreateDiscoverySession).toHaveBeenCalledWith("/repo-b", "codex");
     expect(sendRequest).toHaveBeenCalledWith(discoveryContext, "skills/list", {
       cwds: ["/repo-b"],
     });

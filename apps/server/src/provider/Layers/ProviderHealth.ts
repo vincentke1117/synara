@@ -44,6 +44,8 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { quoteForWindowsShell } from "@t3tools/shared/binaryResolution";
+
 import {
   formatCodexCliUpgradeMessage,
   isCodexCliVersionSupported,
@@ -709,7 +711,7 @@ const runProviderCommand = (
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const command = ChildProcess.make(executable, [...args], {
+    const command = ChildProcess.make(quoteForWindowsShell(executable), [...args], {
       shell: process.platform === "win32",
       env,
     });

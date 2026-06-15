@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 
+import { quoteForWindowsShell } from "@t3tools/shared/binaryResolution";
+
 import type {
   ModelCapabilities,
   ProviderModelDescriptor,
@@ -177,7 +179,7 @@ export const probeGeminiCapabilities = (input: {
   Effect.tryPromise(
     () =>
       new Promise<GeminiCapabilityProbeResult>((resolve) => {
-        const child = spawn(input.binaryPath, ["--acp"], {
+        const child = spawn(quoteForWindowsShell(input.binaryPath), ["--acp"], {
           cwd: input.cwd,
           env: buildGeminiProbeEnv(),
           shell: process.platform === "win32",

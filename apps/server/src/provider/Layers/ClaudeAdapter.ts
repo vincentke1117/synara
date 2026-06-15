@@ -63,6 +63,7 @@ import {
   resolveApiModelId,
   trimOrNull,
 } from "@t3tools/shared/model";
+import { resolveExecutablePath } from "@t3tools/shared/binaryResolution";
 import { buildClaudeSubagentPrompt } from "@t3tools/shared/agentMentions";
 import {
   Cause,
@@ -95,6 +96,34 @@ import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapte
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "claudeAgent" as const;
+
+// The Claude Agent SDK spawns its executable with shell:false, so a Windows `.cmd`/`.bat`/
+// `.ps1` shim (or a script needing an interpreter) would EINVAL. Only a real native binary
+// is safe to hand the SDK directly.
+function isShellFreeSpawnSafe(executablePath: string): boolean {
+  return !/\.(?:cmd|bat|ps1|js|mjs|cjs|jsx|ts|tsx)$/i.test(executablePath);
+}
+
+/**
+ * Resolve the `pathToClaudeCodeExecutable` value to pass to the Claude Agent SDK, or
+ * `undefined` to OMIT it so the SDK resolves its own bundled native binary
+ * (`@anthropic-ai/claude-agent-sdk-<platform>/claude.exe`, which ships in the packaged app).
+ * Passing the bare literal `"claude"` made the SDK fail with "native binary not found at
+ * claude". A configured `binaryPath` is honored (resolved to an absolute path when found);
+ * otherwise we omit, falling back to a PATH-resolved executable only on Windows and only
+ * when it is a native binary the shell-free SDK spawn can launch.
+ */
+function resolveClaudeExecutable(binaryPath?: string): string | undefined {
+  const configured = binaryPath?.trim();
+  if (configured) {
+    return resolveExecutablePath(configured) ?? configured;
+  }
+  if (process.platform !== "win32") {
+    return undefined;
+  }
+  const resolved = resolveExecutablePath("claude");
+  return resolved && isShellFreeSpawnSafe(resolved) ? resolved : undefined;
+}
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -3286,13 +3315,14 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(ultracode ? { ultracode: true } : {}),
         };
         const claudeSubagents = buildClaudeSdkSubagents();
+        const claudeExecutable = resolveClaudeExecutable(providerOptions?.binaryPath);
 
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
           // Keep Claude context-window selection model-driven so session start
           // and in-session switches both use the same API model contract.
           ...(apiModelId ? { model: apiModelId } : {}),
-          pathToClaudeCodeExecutable: providerOptions?.binaryPath ?? "claude",
+          ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
           settingSources: [...CLAUDE_SETTING_SOURCES],
           systemPrompt: {
             type: "preset",
@@ -3670,16 +3700,18 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     async function discoverCommandsViaTemporaryProcess(
       cwd: string,
+      binaryPath?: string,
     ): Promise<ProviderListCommandsResult> {
       // Spawn a lightweight Claude Code process for native command discovery.
       // The SDK's supportedCommands() awaits an internal initialization promise
       // that only resolves when the async generator is iterated (driving the
       // subprocess handshake). We iterate in the background to unblock it.
+      const claudeExecutable = resolveClaudeExecutable(binaryPath);
       const tempQuery = createQuery({
         prompt: neverResolvingUserMessageStream(),
         options: {
           cwd,
-          pathToClaudeCodeExecutable: "claude",
+          ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
           settingSources: [...CLAUDE_SETTING_SOURCES],
           permissionMode: "plan" as PermissionMode,
           persistSession: false,
@@ -3729,7 +3761,8 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         // 3. Spawn a temporary process for discovery (deduplicating concurrent requests).
         const discoveryPromise =
-          pendingCommandDiscovery ?? discoverCommandsViaTemporaryProcess(input.cwd);
+          pendingCommandDiscovery ??
+          discoverCommandsViaTemporaryProcess(input.cwd, input.binaryPath);
         pendingCommandDiscovery = discoveryPromise;
 
         const result = yield* Effect.tryPromise({

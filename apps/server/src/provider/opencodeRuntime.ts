@@ -38,6 +38,7 @@ import {
 import * as Semaphore from "effect/Semaphore";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { quoteForWindowsShell } from "@t3tools/shared/binaryResolution";
 import { NetService } from "@t3tools/shared/Net";
 import { isWindowsShellCommandMissingResult } from "../shell-command-detection.ts";
 
@@ -828,7 +829,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const runOpenCodeCommand: OpenCodeRuntimeShape["runOpenCodeCommand"] = (input) =>
     Effect.gen(function* () {
       const child = yield* spawner.spawn(
-        ChildProcess.make(input.binaryPath, [...input.args], {
+        ChildProcess.make(quoteForWindowsShell(input.binaryPath), [...input.args], {
           shell: process.platform === "win32",
           env: process.env,
         }),
@@ -883,7 +884,12 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
       const child = yield* spawner
         .spawn(
-          ChildProcess.make(input.binaryPath, args, {
+          ChildProcess.make(quoteForWindowsShell(input.binaryPath), args, {
+            // Match runOpenCodeCommand: on Windows the CLI is an `opencode.cmd`/`kilo.cmd`
+            // shim that cannot be exec'd without a shell. Without this the long-lived
+            // `serve` process fails to launch (ENOENT) for every real session and git
+            // text-generation, even though model discovery (which shells) appears to work.
+            shell: process.platform === "win32",
             env: buildOpenCodeServerProcessEnv({
               cliSpec,
               ...(input.experimentalWebSockets !== undefined

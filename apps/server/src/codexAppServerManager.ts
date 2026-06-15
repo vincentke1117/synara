@@ -38,6 +38,7 @@ import {
   type ServerVoiceTranscriptionInput,
   type ServerVoiceTranscriptionResult,
 } from "@t3tools/contracts";
+import { quoteForWindowsShell } from "@t3tools/shared/binaryResolution";
 import { getModelSelectionBooleanOptionValue, normalizeModelSlug } from "@t3tools/shared/model";
 import { Effect, ServiceMap } from "effect";
 
@@ -773,7 +774,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const child = spawn(codexBinaryPath, ["app-server"], {
+      const child = spawn(quoteForWindowsShell(codexBinaryPath), ["app-server"], {
         cwd: resolvedCwd,
         env: buildCodexProcessEnv({
           ...(codexHomePath ? { homePath: codexHomePath } : {}),
@@ -1392,7 +1393,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const child = spawn(codexBinaryPath, ["app-server"], {
+      const child = spawn(quoteForWindowsShell(codexBinaryPath), ["app-server"], {
         cwd: resolvedCwd,
         env: buildCodexProcessEnv({
           ...(codexHomePath ? { homePath: codexHomePath } : {}),
@@ -1822,7 +1823,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return result;
   }
 
-  async listModels(threadId?: string): Promise<ProviderListModelsResult> {
+  async listModels(threadId?: string, binaryPath?: string): Promise<ProviderListModelsResult> {
     const cacheKey = threadId?.trim() || "__default__";
     const cached = getRecentCacheEntry(this.modelCache, cacheKey);
     if (cached) {
@@ -1832,7 +1833,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       };
     }
 
-    const context = await this.resolveContextForDiscovery(threadId);
+    const context = await this.resolveContextForDiscovery(
+      threadId,
+      undefined,
+      binaryPath?.trim() || "codex",
+    );
     const response = await this.sendRequest<Record<string, unknown>>(context, "model/list", {
       cursor: null,
       limit: 50,
@@ -1892,6 +1897,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private async resolveContextForDiscovery(
     threadId?: string,
     cwd?: string,
+    binaryPath: string = "codex",
   ): Promise<CodexSessionContext> {
     const normalizedThreadId = threadId?.trim();
     const normalizedCwd = cwd?.trim() || undefined;
@@ -1917,13 +1923,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           return activeSession;
         }
       }
-      return this.getOrCreateDiscoverySession(normalizedCwd);
+      return this.getOrCreateDiscoverySession(normalizedCwd, binaryPath);
     }
     const firstActive = this.sessions.values().next().value;
     if (firstActive) {
       return firstActive;
     }
-    return this.getOrCreateDiscoverySession(process.cwd());
+    return this.getOrCreateDiscoverySession(process.cwd(), binaryPath);
   }
 
   private async resolveVoiceTranscriptionAuth(input: {
@@ -1964,7 +1970,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     };
   }
 
-  private async getOrCreateDiscoverySession(cwd: string): Promise<CodexSessionContext> {
+  private async getOrCreateDiscoverySession(
+    cwd: string,
+    binaryPath: string = "codex",
+  ): Promise<CodexSessionContext> {
     const normalizedCwd = cwd.trim() || process.cwd();
     const existing = this.discoverySessions.get(normalizedCwd);
     if (existing && !existing.stopping && !existing.child.killed) {
@@ -1973,11 +1982,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
 
     const now = new Date().toISOString();
+    // Honor a user-configured custom binaryPath here too: previously this hardcoded
+    // "codex", so discovery (model list, account, voice auth) failed for installs not on
+    // PATH even when the user had set a working absolute path in settings.
     this.assertSupportedCodexCliVersion({
-      binaryPath: "codex",
+      binaryPath,
       cwd: normalizedCwd,
     });
-    const child = spawn("codex", ["app-server"], {
+    const child = spawn(quoteForWindowsShell(binaryPath), ["app-server"], {
       cwd: normalizedCwd,
       env: buildCodexProcessEnv(),
       stdio: ["pipe", "pipe", "pipe"],
@@ -3344,7 +3356,7 @@ function assertSupportedCodexCliVersion(input: {
   readonly cwd: string;
   readonly homePath?: string;
 }): void {
-  const result = spawnSync(input.binaryPath, ["--version"], {
+  const result = spawnSync(quoteForWindowsShell(input.binaryPath), ["--version"], {
     cwd: input.cwd,
     env: buildCodexProcessEnv({
       ...(input.homePath ? { homePath: input.homePath } : {}),

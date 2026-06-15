@@ -24,6 +24,10 @@
       "types": "./src/shell.ts",
       "import": "./src/shell.ts"
     },
+    "./binaryResolution": {
+      "types": "./src/binaryResolution.ts",
+      "import": "./src/binaryResolution.ts"
+    },
     "./codexConfig": {
       "types": "./src/codexConfig.ts",
       "import": "./src/codexConfig.ts"

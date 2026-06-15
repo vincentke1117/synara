@@ -41,6 +41,8 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { quoteForWindowsShell } from "@t3tools/shared/binaryResolution";
+
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig, type ServerConfigShape } from "../../config.ts";
 import { filterProviderPromptImageAttachments } from "../promptAttachments.ts";
@@ -1669,7 +1671,7 @@ export function makeGrokAdapter(
         let apiError: ProviderAdapterRequestError | undefined;
         const cliModels = yield* Effect.gen(function* () {
           const child = yield* childProcessSpawner.spawn(
-            ChildProcess.make(binaryPath, ["models"], {
+            ChildProcess.make(quoteForWindowsShell(binaryPath), ["models"], {
               shell: process.platform === "win32",
               env: process.env,
             }),

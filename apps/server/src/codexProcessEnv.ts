@@ -5,6 +5,7 @@
 // Depends on: Codex home path helpers, shared Codex config parsing, login-shell env reader.
 
 import {
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -18,10 +19,12 @@ import {
 import path from "node:path";
 
 import { readActiveCodexProviderEnvKey } from "@t3tools/shared/codexConfig";
+import { enrichWindowsPathForSpawn, pathEnvKey } from "@t3tools/shared/binaryResolution";
 import {
   readEnvironmentFromLoginShell,
   resolveLoginShell,
   type ShellEnvironmentReader,
+  type WindowsEnvironmentReader,
 } from "@t3tools/shared/shell";
 
 import {
@@ -99,11 +102,16 @@ export function disableDpCodeBrowserPluginInCodexConfig(config: string): string 
   return output.join("\n");
 }
 
-function ensureCodexOverlaySymlink(input: {
+function ensureCodexOverlayEntry(input: {
   readonly entryName: string;
   readonly sourcePath: string;
   readonly targetPath: string;
   readonly type: "dir" | "file";
+  // Shared-state files (auth.json) MUST end up in the overlay or Codex starts
+  // unauthenticated (401). When symlinking is refused (e.g. Windows without Developer
+  // Mode privilege), fall back to a plain copy. A stale copy beats a missing token —
+  // Codex refreshes tokens into CODEX_HOME anyway.
+  readonly fallbackCopyOnFailure: boolean;
 }): void {
   let targetStat: ReturnType<typeof lstatSync> | undefined;
   try {
@@ -130,7 +138,16 @@ function ensureCodexOverlaySymlink(input: {
     }
   }
 
-  symlinkSync(input.sourcePath, input.targetPath, input.type);
+  try {
+    symlinkSync(input.sourcePath, input.targetPath, input.type);
+  } catch (error) {
+    if (input.fallbackCopyOnFailure && input.type === "file") {
+      rmSync(input.targetPath, { force: true });
+      copyFileSync(input.sourcePath, input.targetPath);
+      return;
+    }
+    throw error;
+  }
 }
 
 function prepareDpCodeCodexHomeOverlay(input: {
@@ -145,24 +162,41 @@ function prepareDpCodeCodexHomeOverlay(input: {
 
   mkdirSync(overlayHomePath, { recursive: true });
 
+  let entries: string[];
   try {
-    for (const entry of readdirSync(sourceHomePath)) {
-      if (entry === "config.toml") {
-        continue;
-      }
+    entries = readdirSync(sourceHomePath).filter((entry) => entry !== "config.toml");
+  } catch {
+    // If the source home is missing entirely, Codex can still start with the overlay
+    // config and create any required state lazily.
+    entries = [];
+  }
+
+  // Process shared-state files (auth.json) FIRST so a later failing entry can never
+  // prevent the auth token from reaching the overlay — the 401 root cause was a transient
+  // temp file earlier in readdir order making lstat throw and aborting the whole loop.
+  entries.sort(
+    (a, b) =>
+      (CODEX_OVERLAY_SHARED_STATE_FILES.has(a) ? 0 : 1) -
+      (CODEX_OVERLAY_SHARED_STATE_FILES.has(b) ? 0 : 1),
+  );
+
+  for (const entry of entries) {
+    // Isolate each entry: a single failing entry (e.g. a temp file that vanished between
+    // readdir and lstat, or a locked sqlite) must not abort the loop and strand auth.json.
+    try {
       const sourcePath = path.join(sourceHomePath, entry);
       const targetPath = path.join(overlayHomePath, entry);
       const stat = lstatSync(sourcePath);
-      ensureCodexOverlaySymlink({
+      ensureCodexOverlayEntry({
         entryName: entry,
         sourcePath,
         targetPath,
         type: stat.isDirectory() ? "dir" : "file",
+        fallbackCopyOnFailure: CODEX_OVERLAY_SHARED_STATE_FILES.has(entry),
       });
+    } catch {
+      // Skip just this entry; Codex can still start and lazily create state.
     }
-  } catch {
-    // If the source home is partially missing, Codex can still start with the
-    // overlay config and create any required state lazily.
   }
 
   const sourceConfigPath = path.join(sourceHomePath, "config.toml");
@@ -182,6 +216,7 @@ export function buildCodexProcessEnv(
     readonly homePath?: string;
     readonly platform?: NodeJS.Platform;
     readonly readEnvironment?: ShellEnvironmentReader;
+    readonly readWindowsEnvironment?: WindowsEnvironmentReader;
   } = {},
 ): NodeJS.ProcessEnv {
   const baseEnv = { ...(input.env ?? process.env) };
@@ -219,6 +254,30 @@ export function buildCodexProcessEnv(
       }
     } catch {
       // Keep inherited environment if shell lookup fails.
+    }
+  }
+
+  if (platform === "win32") {
+    // The login-shell probe above has no Windows analogue; instead enrich PATH from the
+    // persisted registry environment and common CLI install dirs so a Codex CLI installed
+    // outside the launch process's inherited PATH still resolves. Reuses the memoized
+    // registry read from server bootstrap, so this adds no extra subprocess cost.
+    try {
+      // `effectiveEnv` is a plain spread of process.env, whose PATH key is `Path` on
+      // Windows — read and write that exact key so we never create a duplicate.
+      const pathKey = pathEnvKey(effectiveEnv);
+      const enrichedPath = enrichWindowsPathForSpawn(effectiveEnv[pathKey], {
+        platform,
+        env: effectiveEnv,
+        ...(input.readWindowsEnvironment
+          ? { readWindowsEnvironment: input.readWindowsEnvironment }
+          : {}),
+      });
+      if (enrichedPath) {
+        effectiveEnv[pathKey] = enrichedPath;
+      }
+    } catch {
+      // Keep the inherited environment if enrichment fails.
     }
   }
 

@@ -4,6 +4,7 @@ import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "@t3tools/contracts";
+import { quoteForWindowsShell } from "@t3tools/shared/binaryResolution";
 import { sanitizeGeneratedThreadTitle } from "@t3tools/shared/chatThreads";
 import { resolveCodexHome } from "@t3tools/shared/codexConfig";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
@@ -317,7 +318,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
 
       const runCodexCommand = Effect.gen(function* () {
         const command = ChildProcess.make(
-          codexBinaryPath,
+          quoteForWindowsShell(codexBinaryPath),
           [
             "exec",
             "--ephemeral",

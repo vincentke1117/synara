@@ -41,6 +41,8 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { quoteForWindowsShell } from "@t3tools/shared/binaryResolution";
+
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig, type ServerConfigShape } from "../../config.ts";
 import { filterProviderPromptImageAttachments } from "../promptAttachments.ts";
@@ -1469,7 +1471,7 @@ export function makeCursorAdapter(
       const runCursorModelListCommand = Effect.gen(function* () {
         const child = yield* childProcessSpawner.spawn(
           ChildProcess.make(
-            effectiveBinaryPath,
+            quoteForWindowsShell(effectiveBinaryPath),
             [...(effectiveApiEndpoint ? (["-e", effectiveApiEndpoint] as const) : []), "models"],
             {
               shell: process.platform === "win32",
